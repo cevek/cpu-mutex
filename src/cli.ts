@@ -4,6 +4,7 @@ import {
   MAX_WAIT_S,
   lockStatus,
   runLocked,
+  shQuote,
   type RunLockedOptions,
 } from './lock.js';
 
@@ -69,7 +70,7 @@ if (statusMode) {
           : 'held — holder not identified';
   process.stdout.write(`${status.file}: ${line}\n`);
   if (status.busy) {
-    process.stderr.write(`[cpu-mutex] holders and waiters: lsof ${status.file}\n`);
+    process.stderr.write(`[cpu-mutex] holders and waiters: lsof ${shQuote(status.file)}\n`);
   }
   // Scriptable: 0 free, 1 held, 3 undeterminable (2 is the usage error, above).
   process.exit(status.busy === null ? 3 : status.busy ? 1 : 0);

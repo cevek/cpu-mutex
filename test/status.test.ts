@@ -54,6 +54,15 @@ describe('cpu-mutex --status', () => {
     expect(await run.stdout).toContain('cannot tell');
   }, 20_000);
 
+  it('the lsof hint quotes the path — the macOS default dir contains a space', async () => {
+    const spaced = path.join(t.dir, 'app support', 'suite.lock');
+    const held = await heldElsewhere(t.dir, spaced);
+    const run = runWrapper(spaced, [], {}, ['--status']);
+    expect(await run.code).toBe(1);
+    expect(await run.stderr).toContain(`lsof '${spaced}'`);
+    held.release();
+  }, 30_000);
+
   it('--status with a command is a usage error', async () => {
     const run = runWrapper(t.lock, [process.execPath, '-e', 'process.exit(0)'], {}, ['--status']);
     expect(await run.code).toBe(2);

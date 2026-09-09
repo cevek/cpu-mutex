@@ -54,6 +54,10 @@ const note = (msg: string): void => {
   process.stderr.write(`[cpu-mutex] ${msg}\n`);
 };
 
+/** For paths echoed inside copy-pastable commands: the default lock dir on macOS contains a
+ * space (`Application Support`), so an unquoted hint breaks exactly on the default setup. */
+export const shQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
+
 const quietly = <T>(fn: () => T): T | undefined => {
   try {
     return fn();
@@ -329,7 +333,7 @@ export const runLocked = async (argv: string[], opts: RunLockedOptions = {}): Pr
 
     if (isBusy(found, lock)) {
       note(`waiting for the lock — ${describeHolder(lock)}`);
-      note(`if this never clears, see who holds the descriptor: lsof ${lock}`);
+      note(`if this never clears, see who holds the descriptor: lsof ${shQuote(lock)}`);
     }
 
     // The sentinel is written by the inner shell immediately BEFORE the real command runs, so its
