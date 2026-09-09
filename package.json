@@ -1,0 +1,47 @@
+{
+  "name": "cpu-mutex",
+  "version": "0.1.0",
+  "description": "Machine-wide mutex for heavy commands — one CPU-saturating run at a time across every project, via the kernel's own file lock (lockf/flock). No stale locks, ever.",
+  "type": "module",
+  "bin": {
+    "cpu-mutex": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "npm run build && vitest run",
+    "prepublishOnly": "npm run typecheck && npm test"
+  },
+  "keywords": [
+    "mutex",
+    "lock",
+    "flock",
+    "lockf",
+    "cpu",
+    "serialize",
+    "test-runner",
+    "ci",
+    "agents"
+  ],
+  "author": "cevek <x.cevek@gmail.com>",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.5.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  }
+}

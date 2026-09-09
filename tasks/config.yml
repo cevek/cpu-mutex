@@ -1,0 +1,32 @@
+version: 1
+# title: My Project # optional human-readable project name, shown in the web header
+id:
+  prefix: t
+  length: 6
+  alphabet: base32 # base32 (default) | alpha (a-z) | hex (0-9a-f) | digits (0-9)
+statuses:
+  - { name: backlog, actionable: true }
+  - { name: todo, actionable: true }
+  - { name: in-progress }
+  - { name: review }
+  - { name: done, terminal: true }
+priorities: [low, medium, high, urgent]
+# knownTags: [auth, ui, infra] # optional advisory tag hints — autocomplete + agent awareness; tags stay free-form, NOT a closed set
+defaults:
+  status: backlog
+  priority: low
+maxDepth: 2
+archive:
+  mode: manual
+fields:
+  layer: { type: enum, values: [frontend, backend, infra, shared] }
+  complexity: { type: number }
+  importance: { type: enum, values: [low, medium, high] }
+  # who FILED the task — required, so every create names its agent; drop the facet to make it optional
+  author: { type: string, required: true, icon: user-pen }
+  # who OWNS it / did it — set it when an agent picks the task up
+  assignee: { type: string, icon: user-check }
+  linked: { type: reflist } # typed task-refs, no scheduling semantics: query either direction with connected:<id>
+web:
+  host: 127.0.0.1
+  port: 58305
