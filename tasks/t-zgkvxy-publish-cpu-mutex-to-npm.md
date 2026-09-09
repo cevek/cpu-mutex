@@ -1,7 +1,7 @@
 ---
 id: t-zgkvxy
 title: Publish cpu-mutex to npm
-status: backlog
+status: done
 priority: medium
 author: cd57d77a
 created: '2026-09-09T10:58:27.712Z'
