@@ -39,6 +39,12 @@
   ],
   "author": "cevek <x.cevek@gmail.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cevek/cpu-mutex.git"
+  },
+  "bugs": "https://github.com/cevek/cpu-mutex/issues",
+  "homepage": "https://github.com/cevek/cpu-mutex#readme",
   "devDependencies": {
     "@types/node": "^26.5.0",
     "typescript": "^7.0.2",

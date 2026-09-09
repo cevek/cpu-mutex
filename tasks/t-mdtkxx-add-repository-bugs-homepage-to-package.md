@@ -1,7 +1,7 @@
 ---
 id: t-mdtkxx
 title: Add repository/bugs/homepage to package.json
-status: backlog
+status: done
 priority: medium
 author: cd57d77a
 created: '2026-09-09T11:36:24.281Z'
