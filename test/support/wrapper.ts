@@ -51,24 +51,35 @@ export const exists = (file: string): Promise<boolean> =>
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-export type Run = { code: Promise<number>; stderr: Promise<string>; pid: number | undefined };
+export type Run = {
+  code: Promise<number>;
+  stdout: Promise<string>;
+  stderr: Promise<string>;
+  pid: number | undefined;
+};
 
+/** Drives the CLI. `argv` is joined after `--`; pass `wrapperArgs: ['--status']` with an empty
+ * `argv` for the no-command form. */
 export const runWrapper = (
   lock: string,
   argv: string[],
   env: Env = {},
   wrapperArgs: string[] = [],
 ): Run => {
-  const child = spawn(process.execPath, [SCRIPT, ...wrapperArgs, '--', ...argv], {
-    stdio: ['ignore', 'ignore', 'pipe'],
+  const args = argv.length > 0 ? [...wrapperArgs, '--', ...argv] : wrapperArgs;
+  const child = spawn(process.execPath, [SCRIPT, ...args], {
+    stdio: ['ignore', 'pipe', 'pipe'],
     env: testEnv(lock, env),
   });
-  let text = '';
-  child.stderr.on('data', (chunk: Buffer) => (text += chunk.toString()));
+  let out = '';
+  let err = '';
+  child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString()));
+  child.stderr.on('data', (chunk: Buffer) => (err += chunk.toString()));
   return {
     pid: child.pid,
     code: new Promise<number>((resolve) => child.on('close', (c) => resolve(c ?? 1))),
-    stderr: new Promise<string>((resolve) => child.on('close', () => resolve(text))),
+    stdout: new Promise<string>((resolve) => child.on('close', () => resolve(out))),
+    stderr: new Promise<string>((resolve) => child.on('close', () => resolve(err))),
   };
 };
 

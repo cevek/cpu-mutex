@@ -59,11 +59,23 @@ Zero runtime dependencies; both utilities ship with their OS.
 
 ```
 cpu-mutex [--name <lock>] [--wait <seconds>] -- <command> [args...]
+cpu-mutex --status [--name <lock>]
 ```
 
 - `--name <lock>` — a separate named lock (`[A-Za-z0-9._-]+`). Distinct names never contend; use
   them to serialize different resource classes independently. Default: `default`.
 - `--wait <seconds>` — wait ceiling before running unlocked (positive integer, max 2^31−1).
+- `--status` — who holds the mutex right now, without taking it:
+
+  ```
+  $ cpu-mutex --status
+  ~/Library/Application Support/cpu-mutex/default.lock: held by pid 4321 since 2026-09-09T11:02:07.311Z — /Users/me/proj (vitest run)
+  ```
+
+  The held/free verdict comes from the kernel (the same non-blocking probe a waiting run uses);
+  the pid/cwd/command line is the holder's advisory sidecar and is only shown when the kernel
+  agrees the lock is held. Scriptable exit codes: `0` free, `1` held, `2` usage error, `3` cannot
+  tell (no locking utility). For the full picture including waiters: `lsof <lockfile>`.
 
 The `--` may be omitted when the command does not itself start with a dash:
 `cpu-mutex vitest run` works.
@@ -99,8 +111,9 @@ On SIGINT/SIGTERM/SIGHUP/SIGQUIT it kills the process group of **every** live `r
 in the process (concurrent calls share one signal handler) and exits the process. If your
 application must survive signals, wrap the call in a subprocess.
 
-Also exported: `lockFilePath(name?, env?)` — the derived lock file path (throws on an invalid
-name); `LOCK_NAME_RE`, `MAX_WAIT_S` — the validation bounds.
+Also exported: `lockStatus({ name?, file?, env? })` — the `--status` answer as data
+(`{ file, busy: boolean | null, holder? }`); `lockFilePath(name?, env?)` — the derived lock file
+path (throws on an invalid name); `LOCK_NAME_RE`, `MAX_WAIT_S` — the validation bounds.
 
 There is deliberately no `acquire()/release()` or `withLock(fn)` API: the lock's lifetime is tied
 to a process holding a descriptor, which is exactly what makes it stale-proof.

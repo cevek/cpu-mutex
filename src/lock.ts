@@ -184,7 +184,7 @@ const isBusy = ({ bin, kind }: LockBin, lock: string): boolean => {
   return spawnSync(bin, args, { stdio: 'ignore' }).status !== 0;
 };
 
-type HolderInfo = { pid?: number; startedAt?: string; cwd?: string };
+export type HolderInfo = { pid?: number; startedAt?: string; cwd?: string; cmd?: string };
 
 const infoPath = (lock: string): string => `${lock}.info`;
 
@@ -196,6 +196,39 @@ const describeHolder = (lock: string): string => {
   return info
     ? `held by pid ${info.pid} since ${info.startedAt} — ${info.cwd}`
     : 'holder not identified';
+};
+
+export interface LockStatusOptions {
+  /** Lock name; distinct names are independent locks. Default `'default'`. */
+  name?: string;
+  /** Explicit lock file path, overriding name + directory derivation. */
+  file?: string;
+  /** Environment to read configuration from. Default `process.env`. */
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface LockStatus {
+  file: string;
+  /** `true` = held, `false` = free, `null` = cannot tell (no locking utility). */
+  busy: boolean | null;
+  /** The advisory sidecar record, present only when it matches what `busy` says: a crashed
+   * holder's kernel lock is gone while its record lingers, and reporting that record next to
+   * "free" would name a holder that no longer exists. */
+  holder?: HolderInfo;
+}
+
+/** Answers "who holds the mutex right now" without taking it. The truth about held/free is the
+ * KERNEL's, via the same non-blocking no-op probe the waiting notice uses — the sidecar alone
+ * cannot be trusted for it. Never creates the lock file: a missing file is simply a free lock. */
+export const lockStatus = (opts: LockStatusOptions = {}): LockStatus => {
+  const env = opts.env ?? process.env;
+  const file = opts.file ?? lockFilePath(opts.name, env);
+  const holder = readInfo(file);
+  if (!fs.existsSync(file)) return { file, busy: false };
+  const found = findLockBin(env);
+  if (!found) return { file, busy: null, ...(holder ? { holder } : {}) };
+  const busy = isBusy(found, file);
+  return { file, busy, ...(busy && holder ? { holder } : {}) };
 };
 
 /** Runs a command, resolving to its exit code. */
