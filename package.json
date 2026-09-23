@@ -1,6 +1,6 @@
 {
   "name": "cpu-mutex",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Machine-wide mutex for heavy commands — one CPU-saturating run at a time across every project, via the kernel's own file lock (lockf/flock). No stale locks, ever.",
   "type": "module",
   "bin": {
