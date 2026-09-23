@@ -19,6 +19,13 @@ describe('runLocked validates its options', () => {
     });
   }
 
+  for (const timeoutS of [2.5, 0, -5, 2147484]) {
+    it(`rejects timeoutS=${timeoutS}`, async () => {
+      // Past 2^31−1 ms Node's setTimeout fires after 1 ms — every run would be killed at once.
+      await expect(runLocked(['true'], { timeoutS })).rejects.toThrow(TypeError);
+    });
+  }
+
   it('rejects a lock name that would escape the state dir', async () => {
     await expect(runLocked(['true'], { name: '../escape', env: {} })).rejects.toThrow(TypeError);
   });

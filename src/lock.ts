@@ -21,10 +21,12 @@ import * as path from 'node:path';
 //     lock-by-file-EXISTENCE scheme pointed at this lock's path would not merge the two: its
 //     stale-steal would unlink our inode and let two of OUR runs proceed. Sharing requires both
 //     sides on this one mechanism — which is what this package is for.
-//   · a lock held past the end of a run by a leaked descendant (macOS: the lock drops when the
-//     LAST inherited descriptor closes; Linux `flock -o` closes the fd before exec, so descendants
-//     never inherit it). Hence the wait ceiling: a run that waits it out proceeds unlocked and
-//     says so.
+//   · a descendant that left the run's process group (`setsid`). The lock lives exactly as long as
+//     the utility process — the command never holds the descriptor (macOS `lockf` keeps it
+//     close-on-exec, Linux `flock -o` closes it before exec) — so the group kill is the only thing
+//     tying the command's life to the lock, and an escaped descendant runs on outside it.
+//   · a holder that is alive but wedged. It keeps the lock for as long as it lives; the wait
+//     ceiling bounds the queue behind it, the opt-in run ceiling bounds the holder itself.
 
 const DEFAULT_WAIT_S = 30 * 60;
 const SENTINEL_POLL_MS = 250;
@@ -38,6 +40,15 @@ export const LOCK_NAME_RE = /^[A-Za-z0-9._-]+$/;
  * up to it stringifies as plain decimal (no `1e+21` tokens). */
 export const MAX_WAIT_S = 2147483647;
 
+/** Node's `setTimeout` caps at 2^31−1 MILLIseconds and fires after 1 ms past it, so a larger run
+ * ceiling would kill every run at once. `MAX_WAIT_S` is the lock utilities' range, not this one. */
+export const MAX_TIMEOUT_S = 2147483;
+
+// The run ceiling exists for wedged processes, and a wedged process is exactly the one that does
+// not react to a polite signal.
+const KILL_GRACE_MS = 5_000;
+const GROUP_POLL_MS = 100;
+
 export interface RunLockedOptions {
   /** Lock name; distinct names are independent locks. Default `'default'`. */
   name?: string;
@@ -45,6 +56,10 @@ export interface RunLockedOptions {
   file?: string;
   /** Seconds to wait for a held lock before running unlocked. Default 1800. */
   waitS?: number;
+  /** Seconds the command may run, counted from its actual start (queue time excluded). On expiry
+   * its whole process group gets SIGTERM, then SIGKILL after a grace; the run resolves to 124, or
+   * 137 if SIGKILL was needed. Default: no ceiling. */
+  timeoutS?: number;
   /** Environment to read configuration from (CPU_MUTEX*, CI, PATH). Default `process.env`. The
    * spawned command always inherits the real `process.env` regardless. */
   env?: NodeJS.ProcessEnv;
@@ -117,6 +132,16 @@ const waitSeconds = (env: NodeJS.ProcessEnv, explicit: number | undefined): numb
   if (isWaitToken(raw)) return Number(raw);
   note(`ignoring CPU_MUTEX_WAIT_S=${JSON.stringify(raw)} — using ${DEFAULT_WAIT_S}s`);
   return DEFAULT_WAIT_S;
+};
+
+const timeoutSeconds = (explicit: number | undefined): number | undefined => {
+  if (explicit === undefined) return undefined;
+  if (!Number.isInteger(explicit) || explicit <= 0 || explicit > MAX_TIMEOUT_S) {
+    throw new TypeError(
+      `timeoutS must be a positive integer of seconds ≤ ${MAX_TIMEOUT_S}, got ${explicit}`,
+    );
+  }
+  return explicit;
 };
 
 const enabled = (env: NodeJS.ProcessEnv): boolean => {
@@ -263,6 +288,7 @@ const spawnAndWait = (
 // parallel run this exists to prevent, happening silently. (Measured on `lockf` itself: SIGKILL
 // frees the lock and leaves the command running.)
 const liveGroups = new Set<{ pid: number | null }>();
+let runSeq = 0;
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const;
 const signalHandlers = SIGNALS.map(
   (sig) =>
@@ -277,7 +303,20 @@ const signalHandlers = SIGNALS.map(
     ] as const,
 );
 
-const trackGroup = (): { ref: { pid: number | null }; done: () => void } => {
+const groupGone = async (pgid: number, withinMs: number): Promise<boolean> => {
+  const until = Date.now() + withinMs;
+  for (;;) {
+    try {
+      process.kill(-pgid, 0);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ESRCH') return true;
+    }
+    if (Date.now() >= until) return false;
+    await new Promise((resolve) => setTimeout(resolve, GROUP_POLL_MS));
+  }
+};
+
+const trackGroup =(): { ref: { pid: number | null }; done: () => void } => {
   const ref: { pid: number | null } = { pid: null };
   if (liveGroups.size === 0) {
     for (const [sig, handler] of signalHandlers) process.on(sig, handler);
@@ -301,20 +340,61 @@ export const runLocked = async (argv: string[], opts: RunLockedOptions = {}): Pr
   if (argv.length === 0) throw new TypeError('runLocked needs a command');
   const env = opts.env ?? process.env;
   const waitS = waitSeconds(env, opts.waitS);
+  const timeoutS = timeoutSeconds(opts.timeoutS);
   const lock = opts.file ?? lockFilePath(opts.name, env);
 
   const tracked = trackGroup();
   const group = tracked.ref;
+
+  let deadline: NodeJS.Timeout | null = null;
+  let escalation: NodeJS.Timeout | null = null;
+  let timedOut = false;
+  let killed = false;
+  const startClock = (): void => {
+    if (timeoutS === undefined || deadline !== null) return;
+    deadline = setTimeout(() => {
+      timedOut = true;
+      note(`exceeded the run ceiling (--timeout ${timeoutS}s) — killing the run`);
+      if (group.pid !== null) quietly(() => process.kill(-group.pid!, 'SIGTERM'));
+      // Armed here, not after the spawned child closes: on the unlocked paths that child IS the
+      // command, and a command ignoring SIGTERM never closes.
+      escalation = setTimeout(() => {
+        // The group may have emptied between the last poll and now; SIGKILL to nothing is not an
+        // escalation.
+        if (group.pid === null) return;
+        killed = quietly(() => process.kill(-group.pid!, 'SIGKILL')) ?? false;
+        if (killed) note(`the run ignored SIGTERM for ${KILL_GRACE_MS / 1000}s — sent SIGKILL`);
+      }, KILL_GRACE_MS);
+    }, timeoutS * 1000);
+  };
+
+  // The child we spawned closing is not the run ending: on the locked path it is the lock utility,
+  // which dies on SIGTERM at once — freeing the lock — while a SIGTERM-ignoring command in the same
+  // group lives on. Resolving there would leave the wedged run burning every core with the mutex
+  // already free, so the verdict waits until the group is empty (bounded: past SIGKILL, only an
+  // uninterruptible sleep can keep a member alive).
+  const settle = async (code: number): Promise<number> => {
+    if (deadline !== null) clearTimeout(deadline);
+    if (!timedOut || group.pid === null) return code;
+    if (!(await groupGone(group.pid, 2 * KILL_GRACE_MS))) {
+      note(`the run's process group ${group.pid} is still alive after SIGKILL`);
+    }
+    if (escalation !== null) clearTimeout(escalation);
+    return killed ? 137 : 124;
+  };
 
   try {
     // Same process-group treatment as the locked path. Signalled by pid, a wrapper that had not
     // detached its child would exit and leave the run burning every core — and the unlocked paths
     // (CI, CPU_MUTEX=0, no utility, an unusable lock file) are where that is the DEFAULT state,
     // so leaving them undetached would put the orphan case where it is most likely, not least.
-    const runDirectly = (): Promise<number> =>
-      spawnAndWait(argv, { detached: true }, (child) => {
-        group.pid = child.pid ?? null;
-      });
+    const runDirectly = async (): Promise<number> =>
+      settle(
+        await spawnAndWait(argv, { detached: true }, (child) => {
+          group.pid = child.pid ?? null;
+          startClock();
+        }),
+      );
 
     const unlocked = (reason: string): Promise<number> => {
       note(`${reason} — running WITHOUT the lock (runs are not serialized)`);
@@ -348,7 +428,9 @@ export const runLocked = async (argv: string[], opts: RunLockedOptions = {}): Pr
     // `|| exit 66` is for bash-as-sh: POSIX says a redirection failure on `:` exits the shell, but
     // bash carries on — the command would run with no sentinel written, and its red exit would
     // read as a utility failure and re-run the whole thing unlocked, a second time.
-    const sentinel = `${lock}.started.${process.pid}`;
+    // Per CALL, not per process: concurrent runLocked calls on one lock would otherwise read each
+    // other's sentinel — a queued call would start its run clock, and count as having run.
+    const sentinel = `${lock}.started.${process.pid}.${++runSeq}`;
     quietly(() => fs.rmSync(sentinel, { force: true }));
     const inner = ['sh', '-c', ': > "$1" || exit 66; shift; "$@"; exit $?', 'cpu-mutex', sentinel, ...argv];
     const lockArgs =
@@ -367,6 +449,7 @@ export const runLocked = async (argv: string[], opts: RunLockedOptions = {}): Pr
         if (!fs.existsSync(sentinel)) return;
         if (watcher !== null) clearInterval(watcher);
         watcher = null;
+        startClock();
         quietly(() =>
           fs.writeFileSync(
             infoPath(lock),
@@ -381,6 +464,7 @@ export const runLocked = async (argv: string[], opts: RunLockedOptions = {}): Pr
       }, SENTINEL_POLL_MS);
     });
     if (watcher !== null) clearInterval(watcher);
+    const settled = await settle(code);
 
     const ran = fs.existsSync(sentinel);
     quietly(() => fs.rmSync(sentinel, { force: true }));
@@ -398,8 +482,10 @@ export const runLocked = async (argv: string[], opts: RunLockedOptions = {}): Pr
       return await unlocked(`could not acquire the lock (${found.bin} exit ${code})`);
     }
 
-    return code;
+    return settled;
   } finally {
+    if (deadline !== null) clearTimeout(deadline);
+    if (escalation !== null) clearTimeout(escalation);
     tracked.done();
   }
 };

@@ -38,6 +38,21 @@ Zero runtime dependencies; both utilities ship with their OS.
 - **Waiting is bounded** (`--wait` / `CPU_MUTEX_WAIT_S`, default 30 min). Past the ceiling the run
   proceeds **unserialized** and prints `running WITHOUT the lock` — that line always means the run
   is unprotected, never that things worked quietly.
+- **Running can be bounded too** (`--timeout`, opt-in, no default). The wait ceiling protects the
+  queue; it does nothing about the holder itself — a wedged run keeps the lock and a core until
+  someone notices. With `--timeout` the clock starts when the command actually starts (queue time
+  never counts); on expiry the whole process group gets SIGTERM, then SIGKILL after 5 s, and the
+  wrapper exits only once the group is empty (giving up 10 s after SIGTERM — only a member in
+  uninterruptible sleep outlives SIGKILL) — the lock utility dies first, and reporting at that
+  point would leave a SIGTERM-ignoring command running with the lock already free. During the
+  grace the lock is already released, so the next waiter may start beside the dying run. Exit `124`
+  (SIGTERM sufficed) or `137` (SIGKILL was needed), `timeout(1)`'s convention, with a stderr line
+  naming the timeout. GNU `timeout(1)` nested inside (`cpu-mutex -- timeout 600 tsc`) bounds the
+  run the same way, but it moves itself into its own process group — out of reach of the
+  wrapper's group kill, so signalling the wrapper frees the lock while `timeout` and the command
+  keep running. It is also absent on stock macOS. There is deliberately no environment variable:
+  a run ceiling belongs to one command, and a machine-wide value would land on commands of very
+  different lengths. A descendant that left the process group (`setsid`) survives the kill.
 - **Exit codes pass through untouched.** A red run is reported red exactly once — a startup
   sentinel distinguishes "the command ran and failed" from "the locking utility failed", so a
   utility failure never silently re-runs your suite.
@@ -58,13 +73,15 @@ Zero runtime dependencies; both utilities ship with their OS.
 ## CLI
 
 ```
-cpu-mutex [--name <lock>] [--wait <seconds>] -- <command> [args...]
+cpu-mutex [--name <lock>] [--wait <seconds>] [--timeout <seconds>] -- <command> [args...]
 cpu-mutex --status [--name <lock>]
 ```
 
 - `--name <lock>` — a separate named lock (`[A-Za-z0-9._-]+`). Distinct names never contend; use
   them to serialize different resource classes independently. Default: `default`.
 - `--wait <seconds>` — wait ceiling before running unlocked (positive integer, max 2^31−1).
+- `--timeout <seconds>` — run ceiling, counted from the command's actual start (positive integer,
+  max 2147483 — Node's timer range). Exits `124`/`137` on expiry; see Behavior.
 - `--status` — who holds the mutex right now, without taking it:
 
   ```
@@ -103,7 +120,8 @@ process.exit(code);
 
 `runLocked(argv, opts)` spawns the command under the lock and resolves to its exit code. Options:
 `name` (named lock), `file` (explicit lock file, overrides derivation), `waitS` (wait ceiling —
-invalid values throw a `TypeError`, unlike env values which fall back loudly), `env` (environment
+invalid values throw a `TypeError`, unlike env values which fall back loudly), `timeoutS` (run
+ceiling, same semantics and validation as `--timeout`), `env` (environment
 to read `CPU_MUTEX*`/`CI`/`PATH` configuration from; the command itself always inherits the real
 `process.env`).
 
@@ -128,7 +146,10 @@ Honesty about scope, so the gaps are known rather than discovered:
   this lock's path would not merge the two mutexes — its stale-steal would unlink the inode this
   lock lives on and break mutual exclusion silently. Sharing requires both sides on this package
   (or at least on the same kernel primitive and path).
-- **Leaked descendants.** On macOS the lock drops only when the last inherited descriptor closes,
-  so a detached grandchild can hold it past the run (on Linux `flock -o` prevents inheritance).
-  This is why the wait ceiling exists.
+- **Descendants that leave the process group.** The lock lives exactly as long as the
+  `lockf`/`flock` process; the command never holds the descriptor (close-on-exec on macOS,
+  `flock -o` on Linux). Group kills are what tie the command's life to the lock, so a descendant
+  that detached into its own session (`setsid`) keeps running after the lock is released.
+- **A wedged holder.** A live process keeps the lock for as long as it lives. The wait ceiling
+  bounds the queue behind it; only `--timeout` bounds the holder itself, and it is opt-in.
 - **Windows.** No `lockf`/`flock` — runs execute unlocked, loudly.

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {
   LOCK_NAME_RE,
+  MAX_TIMEOUT_S,
   MAX_WAIT_S,
   lockStatus,
   runLocked,
@@ -9,7 +10,7 @@ import {
 } from './lock.js';
 
 const usage = [
-  'usage: cpu-mutex [--name <lock>] [--wait <seconds>] -- <command> [args...]',
+  'usage: cpu-mutex [--name <lock>] [--wait <seconds>] [--timeout <seconds>] -- <command> [args...]',
   '       cpu-mutex --status [--name <lock>]',
 ].join('\n');
 
@@ -35,17 +36,19 @@ while (i < rest.length) {
     i++;
     continue;
   }
-  if (arg === '--name' || arg === '--wait') {
+  if (arg === '--name' || arg === '--wait' || arg === '--timeout') {
     const value = rest[++i];
     if (value === undefined) fail(`${arg} needs a value`);
     if (arg === '--name') {
       if (!LOCK_NAME_RE.test(value)) fail(`--name must match ${LOCK_NAME_RE}`);
       opts.name = value;
     } else {
-      if (!/^\d+$/.test(value) || Number(value) <= 0 || Number(value) > MAX_WAIT_S) {
-        fail(`--wait takes a positive integer of seconds (max ${MAX_WAIT_S})`);
+      const max = arg === '--wait' ? MAX_WAIT_S : MAX_TIMEOUT_S;
+      if (!/^\d+$/.test(value) || Number(value) <= 0 || Number(value) > max) {
+        fail(`${arg} takes a positive integer of seconds (max ${max})`);
       }
-      opts.waitS = Number(value);
+      if (arg === '--wait') opts.waitS = Number(value);
+      else opts.timeoutS = Number(value);
     }
     i++;
     continue;
@@ -58,6 +61,7 @@ const command = rest.slice(i);
 if (statusMode) {
   if (command.length > 0) fail('--status takes no command');
   if (opts.waitS !== undefined) fail('--status takes no --wait');
+  if (opts.timeoutS !== undefined) fail('--status takes no --timeout');
   const status = lockStatus(opts);
   const line =
     status.busy === null
